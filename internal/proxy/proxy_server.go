@@ -1,0 +1,186 @@
+package proxy
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/dgraph-io/badger/v4"
+	"github.com/sirupsen/logrus"
+)
+
+type ProxyHandler struct {
+	timeout time.Duration
+	proxies []*Proxy
+}
+
+type ProxyServer struct {
+	Proxies    []*Proxy
+	HttpServer *http.Server
+	Timeout    time.Duration
+	ListenAddr string
+	BDB        *badger.DB
+}
+
+type Options struct {
+	Timeout    time.Duration
+	ListenAddr string
+}
+
+type Option func(options *Options)
+
+func WithTimeout(timeout time.Duration) Option {
+	return func(options *Options) {
+		options.Timeout = timeout
+	}
+}
+
+func WithAddr(addr string) Option {
+	return func(options *Options) {
+		options.ListenAddr = addr
+	}
+}
+
+func NewProxyServer(proxies []*Proxy, bdb *badger.DB, opts ...Option) *ProxyServer {
+	cfg := &Options{
+		Timeout:    30 * time.Second,
+		ListenAddr: ":8080",
+	}
+
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	handler := &ProxyHandler{
+		timeout: cfg.Timeout,
+		proxies: proxies,
+	}
+	httpServer := &http.Server{
+		Addr:    cfg.ListenAddr,
+		Handler: handler,
+	}
+	return &ProxyServer{
+		ListenAddr: cfg.ListenAddr,
+		Timeout:    cfg.Timeout,
+		Proxies:    proxies,
+		HttpServer: httpServer,
+		BDB:        bdb,
+	}
+}
+
+func (p *ProxyServer) Start() error {
+	logrus.Infof("Starting proxy server on %s", p.ListenAddr)
+	errCh := make(chan error, 1)
+	go func() {
+		if err := p.HttpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("failed to start proxy server: %w", err)
+		}
+	}()
+	if err := waitForServer(p.ListenAddr, 5*time.Second); err != nil {
+		if shutdownErr := p.HttpServer.Shutdown(context.Background()); shutdownErr != nil {
+			logrus.Errorf("Shutdown during startup failure: %v", shutdownErr)
+		}
+		return err
+	}
+	return nil
+}
+
+func waitForServer(listenAddr string, timeout time.Duration) error {
+	checkAddr := strings.Replace(listenAddr, "0.0.0.0", "127.0.0.1", 1)
+
+	start := time.Now()
+	for time.Since(start) < timeout {
+		conn, err := net.DialTimeout("tcp", checkAddr, 100*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("server failed to start listening on %s within %v", checkAddr, timeout)
+}
+
+func (p *ProxyServer) Stop() error {
+	logrus.Info("Stopping proxy server")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+	if err := p.HttpServer.Shutdown(ctx); err != nil {
+		logrus.Errorf("Shutdown error: %v", err)
+	}
+	cancel()
+	logrus.Info("Proxy server shut down")
+	return nil
+}
+
+func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logrus.Errorf("Recovered panic in ServeHTTP for %s: %v", r.URL.String(), rec)
+			http.Error(w, "Internal server error: unexpected panic", http.StatusInternalServerError)
+		}
+	}()
+
+	r.Header.Del("Proxy-Connection")
+	r.Header.Del("Proxy-Authenticate")
+	r.Header.Del("Proxy-Authorization")
+
+	if r.Method == http.MethodConnect {
+		h.handleConnect(w, r)
+		return
+	}
+
+	h.handleRegularRequest(w, r)
+}
+
+func (h *ProxyHandler) handleRegularRequest(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logrus.Errorf("Recovered panic in handleRegularRequest for %s: %v", r.URL.String(), rec)
+			http.Error(w, "Internal server error: unexpected panic", http.StatusInternalServerError)
+		}
+	}()
+
+	proxy := h.selectProxy()
+	if proxy == nil {
+		http.Error(w, "No proxy available", http.StatusServiceUnavailable)
+		return
+	}
+
+	transport := h.createTransport(proxy)
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   h.timeout,
+	}
+
+	req := r.Clone(context.Background())
+	req.Header.Set("X-Forwarded-For", r.RemoteAddr)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		logrus.Errorf("Request to %s failed: %v", r.URL.String(), err)
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	// 轉發響應頭
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+
+	// 轉發狀態碼
+	w.WriteHeader(resp.StatusCode)
+
+	// 轉發響應體
+	_, err = io.Copy(w, resp.Body)
+	if err != nil {
+		logrus.Errorf("Error copying response body: %v", err)
+	}
+}

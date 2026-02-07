@@ -21,7 +21,7 @@ func NewColly() *colly.Collector {
 		{
 			DomainGlob: "*",
 			//RandomDelay: 2 * time.Second,
-			Parallelism: 3,
+			Parallelism: 1,
 		},
 	})
 	if err != nil {

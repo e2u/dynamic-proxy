@@ -1,0 +1,27 @@
+name: Local Config glm-4.7-flash:latest
+version: 1.0.0
+schema: v1
+models:
+  - name: GLM 4.7 Flash
+    provider: ollama
+    model: glm-4.7-flash:latest
+    apiBase: http://192.168.10.242:11434
+    contextLength: 131072
+    roles:
+      - chat
+      - edit
+      - apply
+  - name: Qwen2.5-Coder 1.5B
+    provider: ollama
+    model: qwen2.5-coder:1.5b-base
+    apiBase: http://192.168.10.242:11434
+    contextLength: 131072
+    roles:
+      - autocomplete
+  - name: Nomic Embed
+    provider: ollama
+    model: nomic-embed-text:latest
+    apiBase: http://192.168.10.242:11434
+    contextLength: 131072
+    roles:
+      - embed
