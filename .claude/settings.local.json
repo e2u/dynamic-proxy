@@ -1,7 +1,23 @@
 {
   "permissions": {
     "allow": [
-      "Bash(go run main.go -help)"
+      "Bash(go run main.go -help)",
+      "Bash(go build -o /dev/null ./...)",
+      "Bash(go test ./... -v)",
+      "Bash(go mod tidy)",
+      "Bash(go test ./... -v -run Test_loadTestData)",
+      "Bash(go build -o /tmp/proxy-server .)",
+      "Bash(curl -x http://127.0.0.1:8080 http://www.google.com)",
+      "Bash(go build -o /tmp/dynamic-proxy .)",
+      "Bash(go run main.go -once)",
+      "Bash(curl -x http://127.0.0.1:8080 http://www.163.com -v)",
+      "Bash(pkill -f \"go run main.go\")",
+      "Bash(curl -x http://127.0.0.1:8080 http://www.163.com)",
+      "Bash(pkill -9 -f \"go run main.go\")",
+      "Bash(pkill -9 -f \"go build\")",
+      "Bash(/tmp/dynamic-proxy -once)",
+      "Bash(pkill -f \"dynamic-proxy\")",
+      "Bash(pkill -f \"go run\")"
     ]
   }
 }

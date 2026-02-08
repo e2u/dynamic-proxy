@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bufio"
 	"io"
 	"net"
 	"net/http"
@@ -36,7 +35,7 @@ func (h *ProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	_ = host
 	_ = port
 
-	// 使用隨機 Transport 連接到目標
+	// 使用隨機 Transport 連接到目標，每次都會從數據庫選擇新的代理
 	transport, err := h.getRandomTransport(3) // 最多重試 3 次
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
@@ -51,10 +50,6 @@ func (h *ProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		logrus.Errorf("Failed to connect to %s: %v", r.URL.Host, err)
 		return
 	}
-
-	// 記錄成功使用 proxy
-	h.updateProxyCount(h.selectProxy())
-	h.updateProxyHealth(h.selectProxy(), true)
 
 	// 構建從客戶端到 proxy 的連接（hijack）
 	hijacker, clientOk := w.(http.Hijacker)
@@ -129,96 +124,4 @@ func hijackTargetToClient(targetConn, clientConn net.Conn) {
 	}()
 
 	io.Copy(clientConn, targetConn)
-}
-
-// hijackClientToTargetWithBufferSize 使用緩衝區發送客戶端流量到目標
-func hijackClientToTargetWithBufferSize(clientConn, targetConn net.Conn, bufferSize int) {
-	defer func() {
-		if rec := recover(); rec != nil {
-			logrus.Errorf("Panic in hijackClientToTargetWithBufferSize: %v", rec)
-		}
-		targetConn.Close()
-	}()
-
-	reader := bufio.NewReaderSize(clientConn, bufferSize)
-	writer := bufio.NewWriterSize(targetConn, bufferSize)
-
-	buf := make([]byte, bufferSize)
-	for {
-		n, err := reader.Read(buf)
-		if err != nil {
-			if err != io.EOF {
-				logrus.Debugf("Error reading from client: %v", err)
-			}
-			break
-		}
-
-		wrote, err := writer.Write(buf[:n])
-		if err != nil {
-			logrus.Debugf("Error writing to target: %v", err)
-			break
-		}
-
-		if wrote < n {
-			logrus.Debugf("Partial write to target")
-			break
-		}
-
-		if err := writer.Flush(); err != nil {
-			logrus.Debugf("Error flushing to target: %v", err)
-			break
-		}
-	}
-}
-
-// hijackTargetToClientWithBufferSize 使用緩衝區發送目標流量到客戶端
-func hijackTargetToClientWithBufferSize(targetConn, clientConn net.Conn, bufferSize int) {
-	defer func() {
-		if rec := recover(); rec != nil {
-			logrus.Errorf("Panic in hijackTargetToClientWithBufferSize: %v", rec)
-		}
-		clientConn.Close()
-	}()
-
-	reader := bufio.NewReaderSize(targetConn, bufferSize)
-	writer := bufio.NewWriterSize(clientConn, bufferSize)
-
-	buf := make([]byte, bufferSize)
-	for {
-		n, err := reader.Read(buf)
-		if err != nil {
-			if err != io.EOF {
-				logrus.Debugf("Error reading from target: %v", err)
-			}
-			break
-		}
-
-		wrote, err := writer.Write(buf[:n])
-		if err != nil {
-			logrus.Debugf("Error writing to client: %v", err)
-			break
-		}
-
-		if wrote < n {
-			logrus.Debugf("Partial write to client")
-			break
-		}
-
-		if err := writer.Flush(); err != nil {
-			logrus.Debugf("Error flushing to client: %v", err)
-			break
-		}
-	}
-}
-
-// getBufferSize 根據代理類型獲取合適的緩衝區大小
-func getBufferSize(proxyType string) int {
-	switch proxyType {
-	case "socks5":
-		// SOCKS5 通常有較大的流量需求
-		return 32 * 1024 // 32KB
-	default:
-		// HTTP 和直連通常有較小的流量需求
-		return 8 * 1024 // 8KB
-	}
 }

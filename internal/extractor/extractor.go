@@ -72,6 +72,7 @@ func extractProxiesFromHTMLTable(proxiesChan chan<- *proxy.Proxy, body []byte) (
 			r := &proxy.Proxy{
 				IP:   ip,
 				Port: port,
+				Addr: ip + ":" + port,
 			}
 			wg.Add(1)
 			go func(_p *proxy.Proxy) {
@@ -142,6 +143,7 @@ func extractAndValidateProxies(proxiesChan chan<- *proxy.Proxy, body []byte) (bo
 			IP:       result["ip"],
 			Port:     result["port"],
 			Protocol: strings.ToLower(result["protocol"]),
+			Addr:     result["ip"] + ":" + result["port"],
 		}
 		if r.Protocol == "" {
 			r.Protocol = "http"
@@ -178,6 +180,7 @@ func extractAndValidateProxies(proxiesChan chan<- *proxy.Proxy, body []byte) (bo
 				IP:       m[1],
 				Port:     m[2],
 				Protocol: "http",
+				Addr:     m[1] + ":" + m[2],
 			}
 
 			wg.Add(1)

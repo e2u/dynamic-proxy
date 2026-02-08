@@ -45,9 +45,21 @@ func gatherProxies() {
 	go func() {
 		defer wg.Done()
 		for p := range proxiesChan {
+			// 確保代理數據是有效的
+			if p.IP == "" || p.Port == "" {
+				logrus.Warnf("invalid proxy skipped: IP=%s, Port=%s", p.IP, p.Port)
+				continue
+			}
+
 			err := bdb.Update(func(txn *badger.Txn) error {
 				key := []byte(p.String())
 				val := p.DumpJSON()
+
+				// 檢查 val 是否有效
+				if val == nil || len(val) == 0 {
+					logrus.Errorf("empty JSON value for proxy %s", p.String())
+					return nil // 跳過這個代理
+				}
 
 				_, err := txn.Get(key)
 				if err != nil {
@@ -255,12 +267,13 @@ func checkAllProxiesHealth() error {
 func main() {
 	// Command line flags
 	var (
-		runOnce      = flag.Bool("once", false, "Run proxy gathering once and exit")
-		listProxies  = flag.Bool("list", false, "List all proxies in database")
-		checkHealth  = flag.Bool("check", false, "Check health of all proxies")
-		cleanup      = flag.Bool("cleanup", false, "Clean up old/disabled proxies")
-		logLevel     = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
-		help         = flag.Bool("help", false, "Show help")
+		runOnce       = flag.Bool("once", false, "Run proxy gathering once and exit")
+		listProxies   = flag.Bool("list", false, "List all proxies in database")
+		checkHealth   = flag.Bool("check", false, "Check health of all proxies")
+		cleanup       = flag.Bool("cleanup", false, "Clean up old/disabled proxies")
+		serveAddr     = flag.String("serve", "", "Start proxy server on address (e.g., :8080)")
+		logLevel      = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
+		help          = flag.Bool("help", false, "Show help")
 	)
 
 	flag.Parse()
@@ -335,6 +348,12 @@ func main() {
 		return
 	}
 
+	// Start proxy server if -serve is specified
+	if *serveAddr != "" {
+		startProxyServer(*serveAddr)
+		return
+	}
+
 	// Default behavior - start cron scheduler
 	checkAllProxiesHealth()
 	cleanupProxiesFromDB()
@@ -366,5 +385,42 @@ func main() {
 		return
 	}
 	logrus.Infof("All Proxies in DB:\n%s", string(jb))
+	select {}
+}
+
+// startProxyServer 啟動代理服務器
+func startProxyServer(listenAddr string) {
+	// 從數據庫加載代理
+	proxies, err := listAllProxiesFromDB()
+	if err != nil {
+		logrus.Errorf("failed to load proxies from DB: %v", err)
+		proxies = nil
+	}
+
+	if len(proxies) == 0 {
+		logrus.Warn("no proxies available in database, server will start but requests will fail")
+	} else {
+		logrus.Infof("Loaded %d proxies from database", len(proxies))
+	}
+
+	// 創建代理服務器
+	server := proxy.NewProxyServer(proxies, bdb, proxy.WithAddr(listenAddr))
+
+	// 啟動服務器
+	err = server.Start()
+	if err != nil {
+		logrus.Fatalf("failed to start proxy server: %v", err)
+	}
+
+	logrus.Infof("Proxy server started on %s", listenAddr)
+	logrus.Infof("HTTP proxies available: %d", len(proxies))
+
+	// 開始定期收集代理
+	go func() {
+		logrus.Info("Starting proxy gathering...")
+		gatherProxies()
+	}()
+
+	// 保持運行
 	select {}
 }

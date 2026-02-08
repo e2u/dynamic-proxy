@@ -60,6 +60,7 @@ func NewProxyServer(proxies []*Proxy, bdb *badger.DB, opts ...Option) *ProxyServ
 	handler := &ProxyHandler{
 		timeout: cfg.Timeout,
 		proxies: proxies,
+		BDB:     bdb,
 	}
 	httpServer := &http.Server{
 		Addr:    cfg.ListenAddr,
@@ -146,11 +147,16 @@ func (h *ProxyHandler) handleRegularRequest(w http.ResponseWriter, r *http.Reque
 		}
 	}()
 
-	proxy := h.selectProxy()
-	if proxy == nil {
-		http.Error(w, "No proxy available", http.StatusServiceUnavailable)
+	// 每個請求都從數據庫中隨機選擇一個代理
+	proxy, err := h.selectProxyFromDB()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		logrus.Errorf("Failed to select proxy from DB: %v", err)
 		return
 	}
+
+	// 記錄選中的上遊代理
+	logrus.Infof("Selected upstream proxy: %s", proxy.String())
 
 	transport := h.createTransport(proxy)
 	client := &http.Client{
@@ -158,12 +164,24 @@ func (h *ProxyHandler) handleRegularRequest(w http.ResponseWriter, r *http.Reque
 		Timeout:   h.timeout,
 	}
 
-	req := r.Clone(context.Background())
+	req, err := http.NewRequestWithContext(context.Background(), r.Method, r.URL.String(), nil)
+	if err != nil {
+		logrus.Errorf("Failed to create new request: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// 只複製必要的頭部
+	req.Header = make(http.Header)
+	for key, values := range r.Header {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
 	req.Header.Set("X-Forwarded-For", r.RemoteAddr)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		logrus.Errorf("Request to %s failed: %v", r.URL.String(), err)
+		logrus.Errorf("Request to %s via %s failed: %v", r.URL.String(), proxy.String(), err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -184,6 +202,10 @@ func (h *ProxyHandler) handleRegularRequest(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		logrus.Errorf("Error copying response body: %v", err)
 	}
+
+	// 記錄代理使用情況
+	h.updateProxyCount(proxy)
+	h.updateProxyHealth(proxy, true)
 }
 
 // updateProxyHealth 更新代理健康狀態

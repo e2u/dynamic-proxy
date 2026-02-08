@@ -50,20 +50,49 @@ func (p *Proxy) String() string {
 }
 
 func (p *Proxy) DumpJSON() []byte {
+	// 確保 Proxy 數據是乾淨的
+	if p.IP == "" {
+		p.IP = "0.0.0.0"
+	}
+	if p.Addr == "" {
+		p.Addr = p.IP + ":" + p.Port
+	}
+
 	data, err := json.Marshal(p)
 	if err != nil {
 		logrus.Errorf("failed to marshal proxy: %v", err)
-		return nil
+		return []byte("{}")
 	}
 	return data
 }
 
 func LoadFromJSON(data []byte) (*Proxy, error) {
+	// 清理數據：移除二進制字符和不可打印字符
+	// 這可以處理像是 \x01 這樣的損壞字符
+	cleaned := make([]byte, 0, len(data))
+	for _, b := range data {
+		// 只保留可打印 ASCII 字符和常見的控制字符
+		if (b >= 32 && b <= 126) || b == '\n' || b == '\r' || b == '\t' {
+			cleaned = append(cleaned, b)
+		}
+	}
+
+	// 如果清理後的數據为空，返回錯誤
+	if len(cleaned) == 0 {
+		return nil, fmt.Errorf("empty proxy data after cleaning")
+	}
+
 	var p Proxy
-	err := json.Unmarshal(data, &p)
+	err := json.Unmarshal(cleaned, &p)
 	if err != nil {
 		return nil, err
 	}
+
+	// 驗證代理的基本有效性
+	if p.IP == "" || p.Port == "" {
+		return nil, fmt.Errorf("invalid proxy: missing IP or Port")
+	}
+
 	return &p, nil
 }
 
@@ -82,6 +111,11 @@ func ValidProxy(p *Proxy) bool {
 	if p.Protocol == "" {
 		p.Disable = true
 		return false
+	}
+
+	// 設置 Addr 字段
+	if p.Addr == "" {
+		p.Addr = p.IP + ":" + p.Port
 	}
 
 	var valid bool
