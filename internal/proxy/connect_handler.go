@@ -57,14 +57,14 @@ func (h *ProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	h.updateProxyHealth(h.selectProxy(), true)
 
 	// 構建從客戶端到 proxy 的連接（hijack）
-	clientConn, clientOk := w.(http.Hijacker)
+	hijacker, clientOk := w.(http.Hijacker)
 	if !clientOk {
 		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
 		conn.Close()
 		return
 	}
 
-	clientConn, _, err = clientConn.Hijack()
+	clientConn, _, err := hijacker.Hijack()
 	if err != nil {
 		logrus.Errorf("Failed to hijack client connection: %v", err)
 		conn.Close()
@@ -72,8 +72,9 @@ func (h *ProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 設置連接超時
-	if deadline, ok := w.Header().Get("X-Done"); ok {
-		if d, err := time.ParseDuration(deadline); err == nil {
+	deadline := w.Header().Get("X-Done")
+	if deadline != "" {
+		if d, parseErr := time.ParseDuration(deadline); parseErr == nil {
 			clientConn.SetDeadline(time.Now().Add(d))
 			conn.SetDeadline(time.Now().Add(d))
 		}

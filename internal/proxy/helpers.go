@@ -1,10 +1,10 @@
 package proxy
 
 import (
-	"math/rand"
-	"sync"
+	"fmt"
 	"time"
 
+	"github.com/dgraph-io/badger/v4"
 	"github.com/sirupsen/logrus"
 )
 
@@ -65,13 +65,16 @@ func (h *ProxyHandler) updateProxyCount(proxy *Proxy) {
 				if err := item.Value(func(v []byte) error {
 					count = int64(v[0])
 					return nil
-				})
+				}); err != nil {
+					return err
+				}
 				count++
 				err = txn.Set([]byte(key), []byte{byte(count)})
+				return err
 			} else {
 				err = txn.Set([]byte(key), []byte{1})
+				return err
 			}
-			return err
 		}); err != nil {
 			logrus.Errorf("Failed to update proxy count for %s: %v", proxy.Addr, err)
 		}
@@ -88,27 +91,31 @@ func (h *ProxyHandler) updateProxyHealth(proxy *Proxy, successful bool) {
 				item, err := txn.Get([]byte(key))
 				var health int
 				if err == nil {
-					item.Value(func(v []byte) error {
+					if err := item.Value(func(v []byte) error {
 						health = int(v[0])
 						return nil
-					})
+					}); err != nil {
+						return err
+					}
 				}
 				health = min(health+1, 100)
 				err = txn.Set([]byte(key), []byte{byte(health)})
 			} else {
 				// 失敗使用，減少健康度分數
-				item, err := txn.Get([]byte(key))
+				item, getErr := txn.Get([]byte(key))
 				var health int
-				if err == nil {
-					item.Value(func(v []byte) error {
+				if getErr == nil {
+					if err := item.Value(func(v []byte) error {
 						health = int(v[0])
 						return nil
-					})
+					}); err != nil {
+						return err
+					}
 				}
 				health = max(health-10, 0)
-				err = txn.Set([]byte(key), []byte{byte(health)})
+				setErr := txn.Set([]byte(key), []byte{byte(health)})
+				return setErr
 			}
-			return err
 		}); err != nil {
 			logrus.Errorf("Failed to update proxy health for %s: %v", proxy.Addr, err)
 		}

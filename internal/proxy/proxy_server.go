@@ -17,6 +17,7 @@ import (
 type ProxyHandler struct {
 	timeout time.Duration
 	proxies []*Proxy
+	BDB     *badger.DB
 }
 
 type ProxyServer struct {
@@ -183,4 +184,10 @@ func (h *ProxyHandler) handleRegularRequest(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		logrus.Errorf("Error copying response body: %v", err)
 	}
+}
+
+// updateProxyHealth 更新代理健康狀態
+func (p *ProxyServer) updateProxyHealth(proxy *Proxy, healthy bool) {
+	// 这里可以实现更新代理健康状态的逻辑
+	// 暂时留空，后续可以根据需要实现
 }

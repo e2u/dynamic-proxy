@@ -3,6 +3,9 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"flag"
+	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -38,7 +41,9 @@ func gatherProxies() {
 	var wg sync.WaitGroup
 	var newProxyCount, updateProxyCount int64
 
-	wg.Go(func() {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		for p := range proxiesChan {
 			err := bdb.Update(func(txn *badger.Txn) error {
 				key := []byte(p.String())
@@ -67,7 +72,7 @@ func gatherProxies() {
 				logrus.Errorf("failed to update db for proxy %s: %v", p.String(), err)
 			}
 		}
-	})
+	}()
 
 	c := fetcher.NewColly()
 	logrus.Debugf("Colly collector initialized with User-Agent: %s", c.UserAgent)
@@ -248,7 +253,37 @@ func checkAllProxiesHealth() error {
 }
 
 func main() {
-	logrus.SetLevel(logrus.DebugLevel)
+	// Command line flags
+	var (
+		runOnce      = flag.Bool("once", false, "Run proxy gathering once and exit")
+		listProxies  = flag.Bool("list", false, "List all proxies in database")
+		checkHealth  = flag.Bool("check", false, "Check health of all proxies")
+		cleanup      = flag.Bool("cleanup", false, "Clean up old/disabled proxies")
+		logLevel     = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
+		help         = flag.Bool("help", false, "Show help")
+	)
+
+	flag.Parse()
+
+	if *help {
+		flag.Usage()
+		os.Exit(0)
+	}
+
+	// Set log level
+	switch *logLevel {
+	case "debug":
+		logrus.SetLevel(logrus.DebugLevel)
+	case "info":
+		logrus.SetLevel(logrus.InfoLevel)
+	case "warn":
+		logrus.SetLevel(logrus.WarnLevel)
+	case "error":
+		logrus.SetLevel(logrus.ErrorLevel)
+	default:
+		logrus.SetLevel(logrus.InfoLevel)
+	}
+
 	var err error
 	bdb, err = badger.Open(badger.DefaultOptions("proxy_badger_db"))
 	if err != nil {
@@ -257,6 +292,50 @@ func main() {
 	}
 	defer bdb.Close()
 
+	// Handle command line options
+	if *listProxies {
+		ps, err := listAllProxiesFromDB()
+		if err != nil {
+			logrus.Errorf("listAllProxiesFromDB error: %v", err)
+			os.Exit(1)
+		}
+
+		jb, err := json.MarshalIndent(ps, "", "\t")
+		if err != nil {
+			logrus.Fatalf("failed to marshal json: %v", err)
+			os.Exit(1)
+		}
+		fmt.Printf("All Proxies in DB:\n%s\n", string(jb))
+		return
+	}
+
+	if *checkHealth {
+		err := checkAllProxiesHealth()
+		if err != nil {
+			logrus.Errorf("checkAllProxiesHealth error: %v", err)
+			os.Exit(1)
+		}
+		logrus.Info("Health check completed")
+		return
+	}
+
+	if *cleanup {
+		count, err := cleanupProxiesFromDB()
+		if err != nil {
+			logrus.Errorf("cleanupProxiesFromDB error: %v", err)
+			os.Exit(1)
+		}
+		logrus.Infof("Cleanup completed: deleted %d proxies", count)
+		return
+	}
+
+	if *runOnce {
+		gatherProxies()
+		logrus.Info("Single run completed")
+		return
+	}
+
+	// Default behavior - start cron scheduler
 	checkAllProxiesHealth()
 	cleanupProxiesFromDB()
 	gatherProxies()

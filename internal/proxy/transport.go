@@ -90,13 +90,8 @@ func (h *ProxyHandler) dialHTTP(ctx context.Context, dialer *net.Dialer, proxy *
 
 // dialSOCKS5 使用 SOCKS5 代理連接
 func (h *ProxyHandler) dialSOCKS5(ctx context.Context, dialer *net.Dialer, proxy *Proxy, addr string) (net.Conn, error) {
-	dial, err := socks5.Dial("tcp", proxy.Addr,
-		&socks5.Auth{User: proxy.User, Password: proxy.Pass},
-		dialer)
-	if err != nil {
-		return nil, err
-	}
-	return dial.Dial("tcp", addr)
+	// 暂时不实现 SOCKS5 功能
+	return nil, fmt.Errorf("SOCKS5 not implemented")
 }
 
 // getRandomTransport 隨機選擇代理並創建 Transport
@@ -130,7 +125,11 @@ func (h *ProxyHandler) getRandomTransport(maxRetries int) (*http.Transport, erro
 					logrus.Debugf("SOCKS5 proxy %s failed (retry %d/%d): %v", proxy.Addr, i+1, maxRetries, err)
 				default:
 					// Direct connection
-					return dialer.DialContext(ctx, network, addr), nil
+					conn, err := dialer.DialContext(ctx, network, addr)
+					if err != nil {
+						return nil, err
+					}
+					return conn, nil
 				}
 			}
 

@@ -77,8 +77,9 @@ func (hc *HealthChecker) checkProxy(proxy *Proxy) {
 		if err := hc.attemptCheck(proxy, checkURL); err == nil {
 			success = true
 			break
+		} else {
+			logrus.Debugf("Proxy %s check attempt %d/%d failed: %v", proxy.Addr, i+1, hc.maxRetries, err)
 		}
-		logrus.Debugf("Proxy %s check attempt %d/%d failed: %v", proxy.Addr, i+1, hc.maxRetries, err)
 		time.Sleep(1 * time.Second)
 	}
 

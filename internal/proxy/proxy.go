@@ -34,6 +34,11 @@ type Proxy struct {
 	Protocol string    `json:"protocol"`
 	Disable  bool      `json:"disable"`
 	Updated  time.Time `json:"updated"`
+	Count    int64     `json:"count"`
+	Type     string    `json:"type"`
+	Addr     string    `json:"addr"`
+	User     string    `json:"user"`
+	Pass     string    `json:"pass"`
 }
 
 func (p *Proxy) Address() string {
@@ -69,11 +74,13 @@ func ValidProxy(p *Proxy) bool {
 
 	pp, err := determineConnectionProtocol(p.IP, p.Port)
 	if err != nil {
+		p.Disable = true
 		return false
 	}
 
 	p.Protocol = pp
 	if p.Protocol == "" {
+		p.Disable = true
 		return false
 	}
 
