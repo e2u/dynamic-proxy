@@ -3,30 +3,41 @@ package proxy
 import (
 	"fmt"
 	"math/rand"
+	"sync"
+	"time"
 
 	"github.com/dgraph-io/badger/v4"
 	"github.com/sirupsen/logrus"
 )
 
-// selectProxy 從內存代理列表中隨機選擇一個代理
-func (h *ProxyHandler) selectProxy() *Proxy {
-	proxies := h.proxies
-	if len(proxies) == 0 {
-		return nil
-	}
-
-	randIndex := rand.Intn(len(proxies))
-	proxy := proxies[randIndex]
-	return proxy
+// 使用 sync.Pool 為每個 goroutine 提供獨立的 rand.Rand 實例
+var randPool = sync.Pool{
+	New: func() any {
+		return rand.New(rand.NewSource(time.Now().UnixNano()))
+	},
 }
 
-// selectProxyFromDB 從數據庫中隨機選擇一個代理（每次調用都查詢數據庫）
+func getRand() *rand.Rand {
+	return randPool.Get().(*rand.Rand)
+}
+
+func putRand(r *rand.Rand) {
+	randPool.Put(r)
+}
+
+// selectProxyFromDB 從數據庫中隨機選擇一個代理（使用蓄水池抽樣，不加载所有代理到内存）
 func (h *ProxyHandler) selectProxyFromDB() (*Proxy, error) {
+	logrus.Debugf("selectProxyFromDB: start")
 	if h.BDB == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
 
-	var proxies []*Proxy
+	var selectedProxy *Proxy
+	count := 0
+
+	r := getRand()
+	defer putRand(r)
+
 	err := h.BDB.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
 		opts.PrefetchSize = 100
@@ -43,11 +54,16 @@ func (h *ProxyHandler) selectProxyFromDB() (*Proxy, error) {
 				}
 				// 只選擇未禁用且已更新的代理
 				if !p.Disable && !p.Updated.IsZero() {
-					proxies = append(proxies, p)
+					count++
+					// 蓄水池抽樣：以 1/count 的概率選擇當前代理
+					if r.Intn(count) == 0 {
+						selectedProxy = p
+					}
 				}
 				return nil
 			})
 			if err != nil {
+				logrus.Errorf("selectProxyFromDB: value iteration error: %v", err)
 				return err
 			}
 		}
@@ -58,44 +74,13 @@ func (h *ProxyHandler) selectProxyFromDB() (*Proxy, error) {
 		return nil, err
 	}
 
-	if len(proxies) == 0 {
+	logrus.Debugf("selectProxyFromDB: found %d proxies", count)
+
+	if count == 0 {
 		return nil, fmt.Errorf("no available proxies in database")
 	}
 
-	// 隨機選擇一個代理
-	randIndex := rand.Intn(len(proxies))
-	return proxies[randIndex], nil
-}
-
-// selectProxyByWeight 使用權重選擇 proxy
-func (h *ProxyHandler) selectProxyByWeight() *Proxy {
-	proxies := h.proxies
-	if len(proxies) == 0 {
-		return nil
-	}
-
-	// 根據使用次數計算權重，使用次數越少權重越高
-	totalCount := int64(0)
-	for _, p := range proxies {
-		totalCount += p.Count
-	}
-
-	if totalCount == 0 {
-		return h.selectProxy()
-	}
-
-	// 隨機選擇一個 proxy
-	randValue := int64(rand.Int63()) % totalCount
-	cumulative := int64(0)
-	for _, p := range proxies {
-		weight := p.Count
-		if cumulative+weight > randValue {
-			return p
-		}
-		cumulative += weight
-	}
-
-	return proxies[len(proxies)-1]
+	return selectedProxy, nil
 }
 
 // updateProxyCount 更新代理的使用次數

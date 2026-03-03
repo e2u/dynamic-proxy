@@ -58,17 +58,21 @@ func Test_extractAndValidateProxies(t *testing.T) {
 	}()
 
 	t.Run("proxylist.geonode.com.json", func(t *testing.T) {
-		wg.Go(func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 			extractAndValidateProxies(proxiesChan, Helper_loadTestData("proxylist.geonode.com_01.json"))
 			extractAndValidateProxies(proxiesChan, Helper_loadTestData("proxylist.geonode.com_02.json"))
 			extractAndValidateProxies(proxiesChan, Helper_loadTestData("proxylist.geonode.com_03.json"))
-		})
+		}()
 	})
 
 	t.Run("cdn.jsdelivr.net.json", func(t *testing.T) {
-		wg.Go(func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 			extractAndValidateProxies(proxiesChan, Helper_loadTestData("cdn.jsdelivr.net.json"))
-		})
+		}()
 	})
 
 	wg.Wait()

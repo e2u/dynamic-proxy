@@ -16,12 +16,10 @@ import (
 
 type ProxyHandler struct {
 	timeout time.Duration
-	proxies []*Proxy
 	BDB     *badger.DB
 }
 
 type ProxyServer struct {
-	Proxies    []*Proxy
 	HttpServer *http.Server
 	Timeout    time.Duration
 	ListenAddr string
@@ -59,7 +57,6 @@ func NewProxyServer(proxies []*Proxy, bdb *badger.DB, opts ...Option) *ProxyServ
 
 	handler := &ProxyHandler{
 		timeout: cfg.Timeout,
-		proxies: proxies,
 		BDB:     bdb,
 	}
 	httpServer := &http.Server{
@@ -69,7 +66,6 @@ func NewProxyServer(proxies []*Proxy, bdb *badger.DB, opts ...Option) *ProxyServ
 	return &ProxyServer{
 		ListenAddr: cfg.ListenAddr,
 		Timeout:    cfg.Timeout,
-		Proxies:    proxies,
 		HttpServer: httpServer,
 		BDB:        bdb,
 	}
@@ -120,6 +116,7 @@ func (p *ProxyServer) Stop() error {
 }
 
 func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	logrus.Infof("ServeHTTP: %s %s", r.Method, r.URL.String())
 	defer func() {
 		if rec := recover(); rec != nil {
 			logrus.Errorf("Recovered panic in ServeHTTP for %s: %v", r.URL.String(), rec)
@@ -132,14 +129,17 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Header.Del("Proxy-Authorization")
 
 	if r.Method == http.MethodConnect {
+		logrus.Debugf("ServeHTTP: handling CONNECT request")
 		h.handleConnect(w, r)
 		return
 	}
 
+	logrus.Debugf("ServeHTTP: handling regular request")
 	h.handleRegularRequest(w, r)
 }
 
 func (h *ProxyHandler) handleRegularRequest(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("DEBUG: handleRegularRequest called")
 	defer func() {
 		if rec := recover(); rec != nil {
 			logrus.Errorf("Recovered panic in handleRegularRequest for %s: %v", r.URL.String(), rec)
@@ -205,11 +205,4 @@ func (h *ProxyHandler) handleRegularRequest(w http.ResponseWriter, r *http.Reque
 
 	// 記錄代理使用情況
 	h.updateProxyCount(proxy)
-	h.updateProxyHealth(proxy, true)
-}
-
-// updateProxyHealth 更新代理健康狀態
-func (p *ProxyServer) updateProxyHealth(proxy *Proxy, healthy bool) {
-	// 这里可以实现更新代理健康状态的逻辑
-	// 暂时留空，后续可以根据需要实现
 }

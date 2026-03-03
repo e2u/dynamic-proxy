@@ -85,6 +85,12 @@ func LoadFromJSON(data []byte) (*Proxy, error) {
 	var p Proxy
 	err := json.Unmarshal(cleaned, &p)
 	if err != nil {
+		// 詳細記錄錯誤數據
+		logrus.Errorf("LoadFromJSON error: original len=%d, cleaned len=%d, err=%v", len(data), len(cleaned), err)
+		// 顯示清理後數據的前幾個字節
+		if len(cleaned) > 0 {
+			logrus.Errorf("LoadFromJSON cleaned data (first 100 bytes): %q", string(cleaned[:min(100, len(cleaned))]))
+		}
 		return nil, err
 	}
 

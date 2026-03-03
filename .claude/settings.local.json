@@ -17,7 +17,17 @@
       "Bash(pkill -9 -f \"go build\")",
       "Bash(/tmp/dynamic-proxy -once)",
       "Bash(pkill -f \"dynamic-proxy\")",
-      "Bash(pkill -f \"go run\")"
+      "Bash(pkill -f \"go run\")",
+      "Bash(/tmp/dynamic-proxy -list -log-level debug)",
+      "Bash(netstat -tlnp)",
+      "Bash(ss -tlnp)",
+      "Bash(lsof -i :8080)",
+      "Bash(go run /tmp/test_proxy.go)",
+      "Bash(curl -v -x http://127.0.0.1:8080 http://www.163.com)",
+      "Bash(go run /tmp/test_conn.go)",
+      "Bash(go build:*)",
+      "Bash(go vet:*)",
+      "Bash(git:*)"
     ]
   }
 }

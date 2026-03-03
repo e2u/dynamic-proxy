@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net"
@@ -79,23 +80,76 @@ func (h *ProxyHandler) dialHTTP(ctx context.Context, dialer *net.Dialer, proxy *
 		return nil, err
 	}
 
-	// 讀取代理響應
-	buf := make([]byte, 1024)
-	n, err := conn.Read(buf)
+	// 讀取並解析 HTTP 響應
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to read proxy response: %w", err)
+	}
+	defer resp.Body.Close()
+
+	logrus.Debugf("Proxy %s response status: %s", proxyAddr, resp.Status)
+
+	// 檢查狀態碼是否為 2xx
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		conn.Close()
+		return nil, fmt.Errorf("proxy %s failed to establish connection: %s", proxyAddr, resp.Status)
+	}
+
+	// 重新建立連接（因為 ReadResponse 可能已經讀取了一部分數據）
+	// 需要重新連接到目標地址
+	conn.Close()
+
+	// 重新連接到代理並建立隧道
+	conn, err = dialer.DialContext(ctx, "tcp", proxyURL.Host)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reconnect to proxy %s: %w", proxyURL.Host, err)
+	}
+
+	// 再次發送 CONNECT 請求（這次只讀取狀態行）
+	_, err = conn.Write([]byte(connectReq))
 	if err != nil {
 		conn.Close()
 		return nil, err
 	}
 
-	resp := string(buf[:n])
-	logrus.Debugf("Proxy %s response: %s", proxyAddr, resp)
-
-	if !strings.Contains(strings.ToLower(resp), "200 connection established") {
+	// 讀取狀態行（只讀取第一行）
+	bufReader := bufio.NewReader(conn)
+	statusLine, err := bufReader.ReadString('\n')
+	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("proxy %s failed to establish connection: %s", proxyAddr, resp)
+		return nil, fmt.Errorf("failed to read status line: %w", err)
 	}
 
-	return conn, nil
+	// 解析狀態行：HTTP/1.1 200 Connection established
+	if !strings.Contains(statusLine, "200") {
+		conn.Close()
+		return nil, fmt.Errorf("proxy %s failed to establish connection: %s", proxyAddr, strings.TrimSpace(statusLine))
+	}
+
+	// 讀取並忽略剩餘的響應頭
+	for {
+		line, err := bufReader.ReadString('\n')
+		if err != nil {
+			return nil, fmt.Errorf("failed to read headers: %w", err)
+		}
+		if line == "\r\n" || line == "\n" {
+			break
+		}
+	}
+
+	return &bufferedConn{Conn: conn, Reader: bufReader}, nil
+}
+
+// bufferedConn 包裝 net.Conn 以支持 bufio.Reader
+type bufferedConn struct {
+	net.Conn
+	Reader *bufio.Reader
+}
+
+func (bc *bufferedConn) Read(b []byte) (int, error) {
+	return bc.Reader.Read(b)
 }
 
 // dialSOCKS5 使用 SOCKS5 代理連接
@@ -290,8 +344,10 @@ func (h *ProxyHandler) socks5ReadConnectResponse(conn net.Conn) error {
 
 // getRandomTransport 隨機選擇代理並創建 Transport
 func (h *ProxyHandler) getRandomTransport(_ int) (*http.Transport, error) {
+	logrus.Debugf("getRandomTransport: selecting proxy from DB")
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			logrus.Debugf("getRandomTransport.DialContext: called for %s", addr)
 			dialer := &net.Dialer{
 				Timeout:   30 * time.Second,
 				KeepAlive: 30 * time.Second,
@@ -302,6 +358,8 @@ func (h *ProxyHandler) getRandomTransport(_ int) (*http.Transport, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to select proxy from DB: %w", err)
 			}
+
+			logrus.Debugf("getRandomTransport.DialContext: selected proxy %s", proxy.String())
 
 			switch proxy.Protocol {
 			case "http":

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/dgraph-io/badger/v4"
 	"github.com/sirupsen/logrus"
 )
 
@@ -53,12 +54,52 @@ func (hc *HealthChecker) Stop() {
 
 // checkAllProxies 檢查所有代理
 func (hc *HealthChecker) checkAllProxies() {
-	proxies := hc.proxyServer.Proxies
+	if hc.proxyServer == nil || hc.proxyServer.BDB == nil {
+		logrus.Warn("HealthChecker: proxyServer or BDB is nil")
+		return
+	}
+
+	// 從數據庫獲取所有代理
+	proxies, err := hc.listAllProxiesFromDB()
+	if err != nil {
+		logrus.Errorf("HealthChecker: failed to list proxies from DB: %v", err)
+		return
+	}
+
 	logrus.Debugf("Checking health of %d proxies", len(proxies))
 
 	for _, proxy := range proxies {
 		hc.checkProxy(proxy)
 	}
+}
+
+// listAllProxiesFromDB 從數據庫獲取所有代理
+func (hc *HealthChecker) listAllProxiesFromDB() ([]*Proxy, error) {
+	var proxies []*Proxy
+	err := hc.proxyServer.BDB.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchSize = 100
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			err := item.Value(func(val []byte) error {
+				p, err := LoadFromJSON(val)
+				if err != nil {
+					logrus.Warnf("failed to parse proxy from DB: %v", err)
+					return nil
+				}
+				proxies = append(proxies, p)
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return proxies, err
 }
 
 // checkProxy 單獨檢查一個代理
@@ -199,8 +240,24 @@ func (hc *HealthChecker) buildCheckURL(proxy *Proxy) string {
 
 // updateProxyHealthStatus 更新代理健康狀態
 func (hc *HealthChecker) updateProxyHealthStatus(proxy *Proxy, healthy bool) {
-	if hc.proxyServer != nil {
-		hc.proxyServer.updateProxyHealth(proxy, healthy)
+	// 更新代理的 Disable 狀態
+	if !healthy {
+		proxy.Disable = true
+	} else {
+		proxy.Disable = false
+		proxy.Updated = time.Now()
+	}
+
+	// 更新到數據庫
+	if hc.proxyServer != nil && hc.proxyServer.BDB != nil {
+		key := []byte(proxy.String())
+		val := proxy.DumpJSON()
+		err := hc.proxyServer.BDB.Update(func(txn *badger.Txn) error {
+			return txn.Set(key, val)
+		})
+		if err != nil {
+			logrus.Errorf("failed to update proxy status in DB: %v", err)
+		}
 	}
 
 	status := "unhealthy"

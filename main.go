@@ -34,6 +34,8 @@ var proxyUrls = []string{
 
 var (
 	bdb *badger.DB
+	// 用於防止定時任務並發執行的互斥鎖
+	cronMutex sync.Mutex
 )
 
 func gatherProxies() {
@@ -124,17 +126,16 @@ func cleanupProxiesFromDB() (int, error) {
 		return 0, errors.New("database not initialized")
 	}
 
-	var deletedCount int
 	now := time.Now()
 	maxAge := 72 * time.Hour
 
-	err := bdb.Update(func(txn *badger.Txn) error {
+	// 第一步：使用 View 事務迭代並收集需要刪除的 key
+	var keysToDelete [][]byte
+	err := bdb.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
 		opts.PrefetchSize = 100
 		it := txn.NewIterator(opts)
 		defer it.Close()
-
-		var keysToDelete [][]byte
 
 		for it.Rewind(); it.Valid(); it.Next() {
 			item := it.Item()
@@ -173,20 +174,30 @@ func cleanupProxiesFromDB() (int, error) {
 				return err
 			}
 		}
-
-		for _, key := range keysToDelete {
-			if err := txn.Delete(key); err != nil {
-				logrus.Errorf("failed to delete key: %v", err)
-				return err
-			}
-			deletedCount++
-		}
-
 		return nil
 	})
 
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("failed to iterate proxies: %w", err)
+	}
+
+	// 第二步：使用 Update 事務刪除所有收集的 key
+	deletedCount := 0
+	if len(keysToDelete) > 0 {
+		err = bdb.Update(func(txn *badger.Txn) error {
+			for _, key := range keysToDelete {
+				if err := txn.Delete(key); err != nil {
+					logrus.Errorf("failed to delete key: %v", err)
+					return err
+				}
+				deletedCount++
+			}
+			return nil
+		})
+
+		if err != nil {
+			return 0, fmt.Errorf("failed to delete proxies: %w", err)
+		}
 	}
 
 	logrus.Infof("Cleanup completed: deleted %d proxies from database", deletedCount)
@@ -361,14 +372,20 @@ func main() {
 
 	c := cron.New()
 	c.AddFunc("0 */1 * * *", func() {
+		cronMutex.Lock()
+		defer cronMutex.Unlock()
 		checkAllProxiesHealth()
 	})
 
 	c.AddFunc("30 */1 * * *", func() {
+		cronMutex.Lock()
+		defer cronMutex.Unlock()
 		cleanupProxiesFromDB()
 	})
 
 	c.AddFunc("0 */2 * * *", func() {
+		cronMutex.Lock()
+		defer cronMutex.Unlock()
 		gatherProxies()
 	})
 	c.Start()
@@ -418,6 +435,8 @@ func startProxyServer(listenAddr string) {
 	// 開始定期收集代理
 	go func() {
 		logrus.Info("Starting proxy gathering...")
+		cronMutex.Lock()
+		defer cronMutex.Unlock()
 		gatherProxies()
 	}()
 
