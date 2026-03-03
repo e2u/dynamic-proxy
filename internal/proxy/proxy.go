@@ -28,6 +28,31 @@ func randomTestURL() string {
 	return testURLs[time.Now().UnixNano()%int64(len(testURLs))]
 }
 
+// collectorPool 健康檢查 Collector 池（重用避免重複創建）
+var collectorPool = sync.Pool{
+	New: func() any {
+		c := fetcher.NewColly()
+		c.SetRequestTimeout(10 * time.Second)
+		c.Limit(&colly.LimitRule{
+			RandomDelay: 1 * time.Second,
+		})
+		return c
+	},
+}
+
+// getHealthChecker 從池中獲取 Collector
+func getHealthChecker() *colly.Collector {
+	return collectorPool.Get().(*colly.Collector)
+}
+
+// putHealthChecker 將 Collector 歸還池中
+func putHealthChecker(c *colly.Collector) {
+	// 重置狀態
+	c.OnError(nil)
+	c.OnResponseHeaders(nil)
+	collectorPool.Put(c)
+}
+
 type Proxy struct {
 	IP       string    `json:"ip"`
 	Port     string    `json:"port"`
@@ -102,6 +127,15 @@ func LoadFromJSON(data []byte) (*Proxy, error) {
 	return &p, nil
 }
 
+// ProxyQuality 代理質量評分
+type ProxyQuality struct {
+	ResponseTime    time.Duration // 響應時間
+	AnonymityLevel  string        // 匿名級別（elite, anonymous, transparent）
+	LastChecked     time.Time     // 最後檢查時間
+	SuccessRate     float64       // 成功率（0-1）
+}
+
+// ValidProxy 驗證代理（使用 Collector Pool）
 func ValidProxy(p *Proxy) bool {
 	if p.IP == "" || p.IP == "0.0.0.0" || p.IP == "127.0.0.1" {
 		return false
@@ -125,12 +159,11 @@ func ValidProxy(p *Proxy) bool {
 	}
 
 	var valid bool
+	startTime := time.Now()
 
-	c := fetcher.NewColly()
-	c.Limit(&colly.LimitRule{
-		RandomDelay: 1 * time.Second,
-	})
-	c.SetRequestTimeout(10 * time.Second)
+	// 從池中獲取 Collector
+	c := getHealthChecker()
+	defer putHealthChecker(c)
 
 	c.SetProxy(p.String())
 	c.OnError(func(r *colly.Response, err error) {
@@ -152,12 +185,87 @@ func ValidProxy(p *Proxy) bool {
 	if valid {
 		p.Updated = time.Now()
 		p.Disable = false
-		logrus.Infof("validated proxy: %s", p.String())
+		logrus.Infof("validated proxy: %s (took %v)", p.String(), time.Since(startTime))
 	} else {
 		p.Disable = true
 	}
 
 	return valid
+}
+
+// ValidProxyWithQuality 驗證代理並返回質量評分
+func ValidProxyWithQuality(p *Proxy) (*ProxyQuality, bool) {
+	if p.IP == "" || p.IP == "0.0.0.0" || p.IP == "127.0.0.1" {
+		return nil, false
+	}
+
+	pp, err := determineConnectionProtocol(p.IP, p.Port)
+	if err != nil {
+		p.Disable = true
+		return nil, false
+	}
+
+	p.Protocol = pp
+	if p.Protocol == "" {
+		p.Disable = true
+		return nil, false
+	}
+
+	if p.Addr == "" {
+		p.Addr = p.IP + ":" + p.Port
+	}
+
+	var valid bool
+	var responseTime time.Duration
+	startTime := time.Now()
+
+	c := getHealthChecker()
+	defer putHealthChecker(c)
+
+	c.SetProxy(p.String())
+	c.OnError(func(r *colly.Response, err error) {
+		if r != nil && r.StatusCode > 204 {
+			logrus.Debugf("proxy %s error: %v", p.String(), err)
+		}
+	})
+
+	c.OnResponseHeaders(func(r *colly.Response) {
+		responseTime = time.Since(startTime)
+		if r.StatusCode == 204 {
+			valid = true
+		}
+	})
+
+	c.Visit(randomTestURL())
+	c.Wait()
+
+	quality := &ProxyQuality{
+		ResponseTime:    responseTime,
+		AnonymityLevel:  detectAnonymity(p),
+		LastChecked:     time.Now(),
+		SuccessRate:     1.0,
+	}
+
+	if valid {
+		p.Updated = time.Now()
+		p.Disable = false
+		logrus.Infof("validated proxy: %s (took %v, anonymity: %s)", p.String(), responseTime, quality.AnonymityLevel)
+	} else {
+		p.Disable = true
+		quality.SuccessRate = 0
+	}
+
+	return quality, valid
+}
+
+// detectAnonymity 檢測代理匿名級別
+func detectAnonymity(p *Proxy) string {
+	// 簡化實現：根據響應頭判斷
+	// elite: 不發送 REMOTE_ADDR, HTTP_VIA, HTTP_X_FORWARDED_FOR
+	// anonymous: 發送 HTTP_VIA 但不發送真實 IP
+	// transparent: 發送真實 IP
+	// 由於需要實際測試，此處返回默認值
+	return "unknown"
 }
 
 func determineConnectionProtocol(ip, port string) (string, error) {

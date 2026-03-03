@@ -36,6 +36,8 @@ var (
 	bdb *badger.DB
 	// 用於防止定時任務並發執行的互斥鎖
 	cronMutex sync.Mutex
+	// 批量驗證通道
+	validateChan chan *proxy.Proxy
 )
 
 func gatherProxies() {
@@ -119,6 +121,44 @@ func gatherProxies() {
 	close(proxiesChan)
 	wg.Wait()
 	logrus.Infof("All proxies have been processed, new: %d, updated: %d", newProxyCount, updateProxyCount)
+}
+
+// startBatchValidator 啟動批量驗證器（異步驗證代理）
+func startBatchValidator() {
+	var wg sync.WaitGroup
+	validatorCount := 10 // 同時運行 10 個驗證器
+
+	// 初始化驗證通道
+	validateChan = make(chan *proxy.Proxy, 1000)
+
+	// 啟動驗證器 workers
+	for i := 0; i < validatorCount; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			logrus.Debugf("validator worker %d started", id)
+
+			for p := range validateChan {
+				if proxy.ValidProxy(p) {
+					logrus.Infof("validator %d: proxy %s is healthy", id, p.String())
+
+					// 更新到數據庫
+					if bdb != nil {
+						key := []byte(p.String())
+						val := p.DumpJSON()
+						bdb.Update(func(txn *badger.Txn) error {
+							return txn.Set(key, val)
+						})
+					}
+				} else {
+					logrus.Debugf("validator %d: proxy %s is unhealthy", id, p.String())
+				}
+			}
+		}(i)
+	}
+
+	// 等待所有驗證器完成（實際上這個 channel 不會關閉，除非程序退出）
+	wg.Wait()
 }
 
 func cleanupProxiesFromDB() (int, error) {
@@ -370,6 +410,9 @@ func main() {
 	cleanupProxiesFromDB()
 	gatherProxies()
 
+	// 啟動批量驗證器
+	go startBatchValidator()
+
 	c := cron.New()
 	c.AddFunc("0 */1 * * *", func() {
 		cronMutex.Lock()
@@ -431,6 +474,9 @@ func startProxyServer(listenAddr string) {
 
 	logrus.Infof("Proxy server started on %s", listenAddr)
 	logrus.Infof("HTTP proxies available: %d", len(proxies))
+
+	// 啟動批量驗證器
+	go startBatchValidator()
 
 	// 開始定期收集代理
 	go func() {

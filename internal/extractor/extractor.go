@@ -13,6 +13,31 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// ExtractorConfig 提取器配置
+type ExtractorConfig struct {
+	MaxGoroutines int  // 最大並發 goroutine 數量
+	ValidateNow   bool // 是否即時驗證代理（預設 false，只進行基本格式驗證）
+}
+
+// DefaultConfig 預設配置
+var DefaultConfig = ExtractorConfig{
+	MaxGoroutines: 100, // 限制最大並發數
+	ValidateNow:   false,
+}
+
+// 全局信號量，限制並發
+var extractorSemaphore chan struct{}
+
+// init 初始化信號量
+func init() {
+	extractorSemaphore = make(chan struct{}, DefaultConfig.MaxGoroutines)
+}
+
+// SetMaxGoroutines 設置最大並發數
+func SetMaxGoroutines(n int) {
+	extractorSemaphore = make(chan struct{}, n)
+}
+
 // ExtractRule 提取規則定義
 type ExtractRule struct {
 	Name          string   // 規則名稱
