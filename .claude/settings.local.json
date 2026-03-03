@@ -27,7 +27,8 @@
       "Bash(go run /tmp/test_conn.go)",
       "Bash(go build:*)",
       "Bash(go vet:*)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(go test:*)"
     ]
   }
 }

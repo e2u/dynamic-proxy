@@ -96,7 +96,7 @@ func gatherProxies() {
 		logrus.Infof("%s Response Status Code: %d", r.Request.URL, r.StatusCode)
 		logrus.Debugf("Response Body Length: %d", len(r.Body))
 
-		err := extractor.Extractor(proxiesChan, r.Body)
+		err := extractor.Extractor(proxiesChan, r.Body, r.Request.URL.String())
 		if err != nil {
 			logrus.Errorf("extractor error: %v", err)
 			return
